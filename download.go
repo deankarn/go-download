@@ -2,11 +2,15 @@ package download
 
 import (
 	"context"
+	"crypto/sha1"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strconv"
+	"sync"
 )
 
 const (
@@ -128,10 +132,17 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	}
 
 	var err error
+	var resume bool
 
-	f.dir, err = ioutil.TempDir("", defaultDir)
-	if err != nil {
-		return err
+	f.dir = filepath.Join(os.TempDir(), f.generateSHA1())
+
+	if _, err = os.Stat(f.dir); os.IsNotExist(err) {
+		err = os.Mkdir(f.dir, 0770) // only owner and group have RWX access
+		if err != nil {
+			return err
+		}
+	} else {
+		resume = true
 	}
 
 	gorountines := f.concurencyFn(f.contentLength)
@@ -139,6 +150,8 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	remainer := f.contentLength % chunkSize
 	var pos int64
 	var i int64
+
+	chunkSize--
 
 	// make readers array equal to # goroutines
 	// done this way to allow for recycling of *File
@@ -155,21 +168,83 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	}
 
 	ch := make(chan result)
-	defer close(ch)
+	wg := new(sync.WaitGroup)
+
+	go func() {
+		<-ctx.Done() // using just in case, however unlikely, the goroutines finish prior to scheduling all of them
+		wg.Wait()
+		close(ch)
+	}()
 
 	for ; i < gorountines; i++ {
+
+		wg.Add(1)
 
 		if i == gorountines-1 {
 			chunkSize += remainer // add remainer to last download
 		}
 
-		go func(idx, start, end int64, ch chan<- result) {
+		go func(ctx context.Context, resume bool, idx, start, end int64, wg *sync.WaitGroup, ch chan<- result) {
+
+			defer wg.Done()
+
+			fPath := filepath.Join(f.dir, strconv.FormatInt(idx, 10))
+
+			var fh *os.File
+			var err error
+
+			if resume {
+				fi, err := os.Stat(fPath)
+				if err != nil {
+					if os.IsNotExist(err) {
+						fh, err = os.Create(fPath)
+					}
+				}
+
+				// file exists...must check if partial
+				if fi.Size() < (end-start)+1 {
+
+					// lets append/download only the bytes necessary
+					start += fi.Size()
+
+					fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, 0770)
+				} else {
+
+					fh, err = os.Open(fPath)
+					if err != nil {
+						select {
+						case <-ctx.Done():
+						case ch <- result{idx: idx, err: err}:
+						}
+						return
+					}
+
+					select {
+					case <-ctx.Done():
+					case ch <- result{idx: idx, r: fh}:
+					}
+					return
+				}
+			} else {
+				fh, err = os.Create(fPath)
+			}
+
+			if err != nil {
+				select {
+				case <-ctx.Done():
+				case ch <- result{idx: idx, err: err}:
+				}
+				return
+			}
 
 			var client http.Client
 
 			req, err := http.NewRequest(http.MethodGet, f.url, nil)
 			if err != nil {
-				ch <- result{idx: idx, err: err}
+				select {
+				case <-ctx.Done():
+				case ch <- result{idx: idx, err: err}:
+				}
 				return
 			}
 
@@ -179,33 +254,39 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 
 			resp, err := client.Do(req)
 			if err != nil {
-				ch <- result{idx: idx, err: err}
+				select {
+				case <-ctx.Done():
+				case ch <- result{idx: idx, err: err}:
+				}
 				return
 			}
 			defer resp.Body.Close()
 
 			if resp.StatusCode != http.StatusPartialContent {
-				ch <- result{idx: idx, err: fmt.Errorf("Invalid response code '%d'", resp.StatusCode)}
-				return
-			}
-
-			fh, err := ioutil.TempFile(f.dir, "")
-			if err != nil {
-				ch <- result{idx: idx, err: err}
+				select {
+				case <-ctx.Done():
+				case ch <- result{idx: idx, err: fmt.Errorf("Invalid response code '%d'", resp.StatusCode)}:
+				}
 				return
 			}
 
 			_, err = io.Copy(fh, resp.Body)
 			if err != nil {
-				ch <- result{idx: idx, err: err}
+				select {
+				case <-ctx.Done():
+				case ch <- result{idx: idx, err: err}:
+				}
 				return
 			}
 
 			fh.Seek(0, 0)
 
-			ch <- result{idx: idx, r: fh}
+			select {
+			case <-ctx.Done():
+			case ch <- result{idx: idx, r: fh}:
+			}
 
-		}(i, pos, pos+chunkSize, ch)
+		}(ctx, resume, i, pos, pos+chunkSize, wg, ch)
 
 		pos += chunkSize + 1
 	}
@@ -216,7 +297,14 @@ FOR:
 	for {
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("Cancelled download '%s'", f.url)
+			err := ctx.Err()
+
+			if err == context.Canceled {
+				return fmt.Errorf("Cancelled download of '%s'", f.url)
+			}
+
+			// context.DeadlineExceeded
+			return fmt.Errorf("Download timed out for '%s'", f.url)
 		case res := <-ch:
 
 			j++
@@ -253,10 +341,20 @@ func (f *File) Close() error {
 
 	// close readers from Download function
 	for i := 0; i < len(f.readers); i++ {
-		f.readers[i].Close()
+		if f.readers[i] != nil { // possible if cancelled
+			f.readers[i].Close()
+		}
 	}
 
 	return os.RemoveAll(f.dir)
+}
+
+func (f *File) generateSHA1() string {
+
+	h := sha1.New()
+	io.WriteString(h, f.url)
+
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // chunks up downloads into 2MB chunks, when Accept-Ranges supported
