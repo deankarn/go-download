@@ -18,6 +18,14 @@ const (
 	defaultDir        = "go-download"
 )
 
+// var (
+// 	pool = &sync.Pool{
+// 		New: func() interface{} {
+// 			return new(File)
+// 		},
+// 	}
+// )
+
 // ConcurrencyFn ...
 type ConcurrencyFn func(contentLength int64) int64
 
@@ -47,6 +55,9 @@ func OpenContext(ctx context.Context, url string, fn ConcurrencyFn) (*File, erro
 		fn = defaultConcurrencyFunc
 	}
 
+	// f := pool.Get().(*File)
+	// f.url = url
+	// f.concurencyFn = fn
 	f := &File{
 		url:          url,
 		concurencyFn: fn,
@@ -134,7 +145,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	var err error
 	var resume bool
 
-	f.dir = filepath.Join(os.TempDir(), f.generateSHA1())
+	f.dir = filepath.Join(os.TempDir(), defaultDir+f.generateSHA1())
 
 	if _, err = os.Stat(f.dir); os.IsNotExist(err) {
 		err = os.Mkdir(f.dir, 0770) // only owner and group have RWX access
@@ -345,6 +356,9 @@ func (f *File) Close() error {
 			f.readers[i].Close()
 		}
 	}
+
+	// f.readers = f.readers[0:0]
+	// pool.Put(f)
 
 	return os.RemoveAll(f.dir)
 }
