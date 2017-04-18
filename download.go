@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	defaultChunkSize int64 = 1048576 // 1MB
-	defaultDir             = "go-download"
+	defaultGoroutines = 10
+	defaultDir        = "go-download"
 )
 
 // ConcurrencyFn ...
@@ -261,5 +261,5 @@ func (f *File) Close() error {
 
 // chunks up downloads into 2MB chunks, when Accept-Ranges supported
 func defaultConcurrencyFunc(length int64) int64 {
-	return length / defaultChunkSize
+	return defaultGoroutines
 }
