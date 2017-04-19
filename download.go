@@ -3,6 +3,7 @@ package download
 import (
 	"context"
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 )
 
 const (
@@ -19,7 +21,8 @@ const (
 )
 
 var (
-	_ io.Reader = (*File)(nil)
+	_        io.Reader = (*File)(nil)
+	fileMode           = os.FileMode(0770)
 
 // 	pool = &sync.Pool{
 // 		New: func() interface{} {
@@ -37,7 +40,7 @@ type Options struct {
 
 // ConcurrencyFn is the function used to determine the level of concurrency aka the
 // number of goroutines to use. Default concurrency level is 10
-type ConcurrencyFn func(contentLength int64) int64
+type ConcurrencyFn func(size int64) int64
 
 // ProxyFn is the function used to pass the download io.Reader for proxying.
 // eg. displaying a progress bar of the download.
@@ -45,12 +48,19 @@ type ProxyFn func(size int64, r io.Reader) io.Reader
 
 // File represents an open file descriptor to a downloaded file(s)
 type File struct {
-	url           string
-	dir           string
-	contentLength int64
-	options       *Options
-	readers       []io.ReadCloser
+	url     string
+	dir     string
+	size    int64
+	modTime time.Time
+	options *Options
+	readers []io.ReadCloser
 	io.Reader
+}
+
+type partialResult struct {
+	idx int64
+	r   io.ReadCloser
+	err error
 }
 
 // Open downloads and opens the file(s) downloaded by the given url
@@ -87,7 +97,7 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 		return nil, &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusOK}
 	}
 
-	f.contentLength = resp.ContentLength
+	f.size = resp.ContentLength
 
 	if t := resp.Header.Get("Accept-Ranges"); t == "bytes" {
 		err = f.downloadRangeBytes(ctx)
@@ -147,23 +157,24 @@ func (f *File) download(ctx context.Context) error {
 	fh.Seek(0, 0)
 
 	f.Reader = fh
+	f.modTime = time.Now()
 
 	return nil
 }
 
 func (f *File) downloadRangeBytes(ctx context.Context) error {
 
-	if f.contentLength < 0 {
-		return fmt.Errorf("Invalid content length '%d'", f.contentLength)
+	if f.size < 0 {
+		return fmt.Errorf("Invalid content length '%d'", f.size)
 	}
 
 	var err error
 	var resume bool
 
-	f.dir = filepath.Join(os.TempDir(), defaultDir+f.generateSHA1())
+	f.dir = filepath.Join(os.TempDir(), defaultDir+f.generateHash())
 
 	if _, err = os.Stat(f.dir); os.IsNotExist(err) {
-		err = os.Mkdir(f.dir, 0770) // only owner and group have RWX access
+		err = os.Mkdir(f.dir, fileMode) // only owner and group have RWX access
 		if err != nil {
 			return err
 		}
@@ -174,13 +185,13 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	var goroutines int64
 
 	if f.options == nil || f.options.Concurrency == nil {
-		goroutines = defaultConcurrencyFunc(f.contentLength)
+		goroutines = defaultConcurrencyFunc(f.size)
 	} else {
-		goroutines = f.options.Concurrency(f.contentLength)
+		goroutines = f.options.Concurrency(f.size)
 	}
 
-	chunkSize := f.contentLength / goroutines
-	remainer := f.contentLength % chunkSize
+	chunkSize := f.size / goroutines
+	remainer := f.size % chunkSize
 	var pos int64
 	var i int64
 
@@ -194,13 +205,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 		f.readers = f.readers[:goroutines]
 	}
 
-	type result struct {
-		idx int64
-		r   io.ReadCloser
-		err error
-	}
-
-	ch := make(chan result)
+	ch := make(chan partialResult)
 	wg := new(sync.WaitGroup)
 
 	go func() {
@@ -217,115 +222,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 			chunkSize += remainer // add remainer to last download
 		}
 
-		go func(ctx context.Context, resume bool, idx, start, end int64, wg *sync.WaitGroup, ch chan<- result) {
-
-			defer wg.Done()
-
-			fPath := filepath.Join(f.dir, strconv.FormatInt(idx, 10))
-
-			var fh *os.File
-			var err error
-
-			if resume {
-				fi, err := os.Stat(fPath)
-				if err != nil {
-					if os.IsNotExist(err) {
-						fh, err = os.Create(fPath)
-					}
-				}
-
-				// file exists...must check if partial
-				if fi.Size() < (end-start)+1 {
-
-					// lets append/download only the bytes necessary
-					start += fi.Size()
-
-					fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, 0770)
-				} else {
-
-					fh, err = os.Open(fPath)
-					if err != nil {
-						select {
-						case <-ctx.Done():
-						case ch <- result{idx: idx, err: err}:
-						}
-						return
-					}
-
-					select {
-					case <-ctx.Done():
-					case ch <- result{idx: idx, r: fh}:
-					}
-					return
-				}
-			} else {
-				fh, err = os.Create(fPath)
-			}
-
-			if err != nil {
-				select {
-				case <-ctx.Done():
-				case ch <- result{idx: idx, err: err}:
-				}
-				return
-			}
-
-			var client http.Client
-
-			req, err := http.NewRequest(http.MethodGet, f.url, nil)
-			if err != nil {
-				select {
-				case <-ctx.Done():
-				case ch <- result{idx: idx, err: err}:
-				}
-				return
-			}
-
-			req = req.WithContext(ctx)
-
-			req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
-
-			resp, err := client.Do(req)
-			if err != nil {
-				select {
-				case <-ctx.Done():
-				case ch <- result{idx: idx, err: err}:
-				}
-				return
-			}
-			defer resp.Body.Close()
-
-			if resp.StatusCode != http.StatusPartialContent {
-				select {
-				case <-ctx.Done():
-				case ch <- result{idx: idx, err: &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}}:
-				}
-				return
-			}
-
-			var read io.Reader = resp.Body
-
-			if f.options != nil && f.options.Proxy != nil {
-				read = f.options.Proxy((end-start)+1, read)
-			}
-
-			_, err = io.Copy(fh, read)
-			if err != nil {
-				select {
-				case <-ctx.Done():
-				case ch <- result{idx: idx, err: err}:
-				}
-				return
-			}
-
-			fh.Seek(0, 0)
-
-			select {
-			case <-ctx.Done():
-			case ch <- result{idx: idx, r: fh}:
-			}
-
-		}(ctx, resume, i, pos, pos+chunkSize, wg, ch)
+		go f.downloadPartial(ctx, resume, i, pos, pos+chunkSize, wg, ch)
 
 		pos += chunkSize + 1
 	}
@@ -366,16 +263,136 @@ FOR:
 	}
 
 	f.Reader = io.MultiReader(readers...)
+	f.modTime = time.Now()
 
 	return nil
 }
 
-// ContentLength ...
-func (f *File) ContentLength() int64 {
-	return f.contentLength
+func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx, start, end int64, wg *sync.WaitGroup, ch chan<- partialResult) {
+
+	defer wg.Done()
+
+	fPath := filepath.Join(f.dir, strconv.FormatInt(idx, 10))
+
+	var fh *os.File
+	var err error
+
+	if resumeable {
+		fi, err := os.Stat(fPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				fh, err = os.Create(fPath)
+			}
+		}
+
+		// file exists...must check if partial
+		if fi.Size() < (end-start)+1 {
+
+			// lets append/download only the bytes necessary
+			start += fi.Size()
+
+			fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, fileMode)
+		} else {
+
+			fh, err = os.Open(fPath)
+			if err != nil {
+				select {
+				case <-ctx.Done():
+				case ch <- partialResult{idx: idx, err: err}:
+				}
+				return
+			}
+
+			select {
+			case <-ctx.Done():
+			case ch <- partialResult{idx: idx, r: fh}:
+			}
+			return
+		}
+	} else {
+		fh, err = os.Create(fPath)
+	}
+
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		case ch <- partialResult{idx: idx, err: err}:
+		}
+		return
+	}
+
+	var client http.Client
+
+	req, err := http.NewRequest(http.MethodGet, f.url, nil)
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		case ch <- partialResult{idx: idx, err: err}:
+		}
+		return
+	}
+
+	req = req.WithContext(ctx)
+
+	req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+	resp, err := client.Do(req)
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		case ch <- partialResult{idx: idx, err: err}:
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusPartialContent {
+		select {
+		case <-ctx.Done():
+		case ch <- partialResult{idx: idx, err: &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}}:
+		}
+		return
+	}
+
+	var read io.Reader = resp.Body
+
+	if f.options != nil && f.options.Proxy != nil {
+		read = f.options.Proxy((end-start)+1, read)
+	}
+
+	_, err = io.Copy(fh, read)
+	if err != nil {
+		select {
+		case <-ctx.Done():
+		case ch <- partialResult{idx: idx, err: err}:
+		}
+		return
+	}
+
+	fh.Seek(0, 0)
+
+	select {
+	case <-ctx.Done():
+	case ch <- partialResult{idx: idx, r: fh}:
+	}
 }
 
-// Close ...
+// Stat returns the FileInfo structure describing file(s). If there is an error, it will be of type *PathError.
+func (f *File) Stat() (os.FileInfo, error) {
+
+	if f.modTime.IsZero() {
+		return nil, &os.PathError{Op: "stat", Path: filepath.Base(f.url), Err: errors.New("bad file descriptor")}
+	}
+
+	return &fileInfo{
+		name:    filepath.Base(f.url),
+		size:    f.size,
+		mode:    fileMode,
+		modTime: f.modTime,
+	}, nil
+}
+
+// Close closes the File(s), rendering it unusable for I/O. It returns an error, if any.
 func (f *File) Close() error {
 
 	// close readers from Download function
@@ -387,13 +404,15 @@ func (f *File) Close() error {
 
 	// f.options = nil
 	// f.readers = f.readers[0:0]
+	f.modTime = time.Time{}
 	// pool.Put(f)
 
 	return os.RemoveAll(f.dir)
 }
 
-func (f *File) generateSHA1() string {
+func (f *File) generateHash() string {
 
+	// Open to a better way, but should not collide
 	h := sha1.New()
 	io.WriteString(h, f.url)
 
