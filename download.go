@@ -18,27 +18,32 @@ const (
 	defaultDir        = "go-download"
 )
 
-// var (
+var (
+	_ io.Reader = (*File)(nil)
+
 // 	pool = &sync.Pool{
 // 		New: func() interface{} {
 // 			return new(File)
 // 		},
 // 	}
-// )
+)
 
-// Options ...
+// Options contains any specific configuration values
+// for downloading/opening a file
 type Options struct {
 	Concurrency ConcurrencyFn
 	Proxy       ProxyFn
 }
 
-// ProxyFn ...
-type ProxyFn func(size int64, r io.Reader) io.Reader
-
-// ConcurrencyFn ...
+// ConcurrencyFn is the function used to determine the level of concurrency aka the
+// number of goroutines to use. Default concurrency level is 10
 type ConcurrencyFn func(contentLength int64) int64
 
-// File ...
+// ProxyFn is the function used to pass the download io.Reader for proxying.
+// eg. displaying a progress bar of the download.
+type ProxyFn func(size int64, r io.Reader) io.Reader
+
+// File represents an open file descriptor to a downloaded file(s)
 type File struct {
 	url           string
 	dir           string
@@ -48,7 +53,7 @@ type File struct {
 	io.Reader
 }
 
-// Open ...
+// Open downloads and opens the file(s) downloaded by the given url
 func Open(url string, options *Options) (*File, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -57,13 +62,12 @@ func Open(url string, options *Options) (*File, error) {
 	return OpenContext(ctx, url, options)
 }
 
-// OpenContext ...
+// OpenContext downloads and opens the file(s) downloaded by the given url and is cancellable using the provided context.
+// The context provided must be non-nil
 func OpenContext(ctx context.Context, url string, options *Options) (*File, error) {
 
-	if options == nil {
-		// options = &Options{
-		// 	Concurrency: defaultConcurrencyFunc,
-		// }
+	if ctx == nil {
+		panic("nil context")
 	}
 
 	// f := pool.Get().(*File)
@@ -74,17 +78,13 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 		options: options,
 	}
 
-	// if f.options.Concurrency == nil {
-	// 	f.options.Concurrency = defaultConcurrencyFunc
-	// }
-
 	resp, err := http.Head(f.url)
 	if err != nil {
 		return nil, err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("Invalid response code '%d'", resp.StatusCode)
+		return nil, &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusOK}
 	}
 
 	f.contentLength = resp.ContentLength
@@ -120,7 +120,7 @@ func (f *File) download(ctx context.Context) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("Invalid response code '%d'", resp.StatusCode)
+		return &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusOK}
 	}
 
 	f.dir, err = ioutil.TempDir("", defaultDir)
@@ -298,7 +298,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 			if resp.StatusCode != http.StatusPartialContent {
 				select {
 				case <-ctx.Done():
-				case ch <- result{idx: idx, err: fmt.Errorf("Invalid response code '%d'", resp.StatusCode)}:
+				case ch <- result{idx: idx, err: &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}}:
 				}
 				return
 			}
@@ -339,11 +339,11 @@ FOR:
 			err := ctx.Err()
 
 			if err == context.Canceled {
-				return fmt.Errorf("Cancelled download of '%s'", f.url)
+				return &Canceled{url: f.url}
 			}
 
 			// context.DeadlineExceeded
-			return fmt.Errorf("Download timed out for '%s'", f.url)
+			return &DeadlineExceeded{url: f.url}
 		case res := <-ch:
 
 			j++
