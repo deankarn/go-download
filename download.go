@@ -26,6 +26,15 @@ const (
 // 	}
 // )
 
+// Options ...
+type Options struct {
+	Concurrency ConcurrencyFn
+	Proxy       ProxyFn
+}
+
+// ProxyFn ...
+type ProxyFn func(size int64, r io.Reader) io.Reader
+
 // ConcurrencyFn ...
 type ConcurrencyFn func(contentLength int64) int64
 
@@ -34,34 +43,40 @@ type File struct {
 	url           string
 	dir           string
 	contentLength int64
+	options       *Options
 	readers       []io.ReadCloser
-	concurencyFn  ConcurrencyFn
 	io.Reader
 }
 
 // Open ...
-func Open(url string, fn ConcurrencyFn) (*File, error) {
+func Open(url string, options *Options) (*File, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	return OpenContext(ctx, url, fn)
+	return OpenContext(ctx, url, options)
 }
 
 // OpenContext ...
-func OpenContext(ctx context.Context, url string, fn ConcurrencyFn) (*File, error) {
+func OpenContext(ctx context.Context, url string, options *Options) (*File, error) {
 
-	if fn == nil {
-		fn = defaultConcurrencyFunc
+	if options == nil {
+		// options = &Options{
+		// 	Concurrency: defaultConcurrencyFunc,
+		// }
 	}
 
 	// f := pool.Get().(*File)
 	// f.url = url
 	// f.concurencyFn = fn
 	f := &File{
-		url:          url,
-		concurencyFn: fn,
+		url:     url,
+		options: options,
 	}
+
+	// if f.options.Concurrency == nil {
+	// 	f.options.Concurrency = defaultConcurrencyFunc
+	// }
 
 	resp, err := http.Head(f.url)
 	if err != nil {
@@ -156,8 +171,15 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 		resume = true
 	}
 
-	gorountines := f.concurencyFn(f.contentLength)
-	chunkSize := f.contentLength / gorountines
+	var goroutines int64
+
+	if f.options == nil || f.options.Concurrency == nil {
+		goroutines = defaultConcurrencyFunc(f.contentLength)
+	} else {
+		goroutines = f.options.Concurrency(f.contentLength)
+	}
+
+	chunkSize := f.contentLength / goroutines
 	remainer := f.contentLength % chunkSize
 	var pos int64
 	var i int64
@@ -166,10 +188,10 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 
 	// make readers array equal to # goroutines
 	// done this way to allow for recycling of *File
-	if int64(cap(f.readers)) < gorountines {
-		f.readers = make([]io.ReadCloser, gorountines, gorountines)
+	if int64(cap(f.readers)) < goroutines {
+		f.readers = make([]io.ReadCloser, goroutines, goroutines)
 	} else {
-		f.readers = f.readers[:gorountines]
+		f.readers = f.readers[:goroutines]
 	}
 
 	type result struct {
@@ -187,11 +209,11 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 		close(ch)
 	}()
 
-	for ; i < gorountines; i++ {
+	for ; i < goroutines; i++ {
 
 		wg.Add(1)
 
-		if i == gorountines-1 {
+		if i == goroutines-1 {
 			chunkSize += remainer // add remainer to last download
 		}
 
@@ -281,7 +303,13 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 				return
 			}
 
-			_, err = io.Copy(fh, resp.Body)
+			var read io.Reader = resp.Body
+
+			if f.options != nil && f.options.Proxy != nil {
+				read = f.options.Proxy((end-start)+1, read)
+			}
+
+			_, err = io.Copy(fh, read)
 			if err != nil {
 				select {
 				case <-ctx.Done():
@@ -357,6 +385,7 @@ func (f *File) Close() error {
 		}
 	}
 
+	// f.options = nil
 	// f.readers = f.readers[0:0]
 	// pool.Put(f)
 
