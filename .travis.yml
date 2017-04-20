@@ -21,7 +21,7 @@ before_script:
   - go vet ./...
 
 script:
- - gofmt -s
+ - gofmt -d -s .
  - golint ./...
  - ineffassign ./
  - find . -type f | xargs misspell -source=text
