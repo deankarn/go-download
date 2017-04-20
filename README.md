@@ -1,6 +1,8 @@
 Package go-download
 ===================
 ![Project status](https://img.shields.io/badge/version-1.0.0-green.svg)
+[![Build Status](https://travis-ci.org/joeybloggs/go-download.svg?branch=master)](https://travis-ci.org/joeybloggs/go-download)
+[![Coverage Status](https://coveralls.io/repos/github/joeybloggs/go-download/badge.svg?branch=master)](https://coveralls.io/github/joeybloggs/go-download?branch=master)
 [![GoDoc](https://godoc.org/github.com/joeybloggs/go-download?status.svg)](https://godoc.org/github.com/joeybloggs/go-download)
 ![License](https://img.shields.io/badge/license-BSD%202--clause-blue.svg)
 
