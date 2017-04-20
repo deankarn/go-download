@@ -16,7 +16,7 @@ type InvalidResponseCode struct {
 
 // Error returns the InvalidResponseCode error string
 func (e *InvalidResponseCode) Error() string {
-	return fmt.Sprintf("Invalid response code, recieved '%d' expected '%d", e.got, e.expected)
+	return fmt.Sprintf("Invalid response code, recieved '%d' expected '%d'", e.got, e.expected)
 }
 
 // DeadlineExceeded is the error containing the deadline exceeded error information
