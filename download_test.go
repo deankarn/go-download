@@ -129,7 +129,7 @@ func TestBadOptions(t *testing.T) {
 		t.Fatal("Expected error to be of type *InvalidResponseCode")
 	}
 
-	expected := "Invalid response code, recieved '404' expected '200'"
+	expected := "Invalid response code, received '404' expected '200'"
 
 	if err.Error() != expected {
 		t.Fatalf("Expected '%s' got '%s'", expected, err.Error())
@@ -142,7 +142,7 @@ func TestBadOptions(t *testing.T) {
 		t.Fatal("Expected error to be of type *InvalidResponseCode")
 	}
 
-	expected = "Invalid response code, recieved '404' expected '200'"
+	expected = "Invalid response code, received '404' expected '200'"
 
 	if err.Error() != expected {
 		t.Fatalf("Expected '%s' got '%s'", expected, err.Error())
@@ -164,7 +164,7 @@ func TestBadOptions(t *testing.T) {
 
 	url = server.URL + "/testdata/good-head-bad-partial"
 
-	expected = "Invalid response code, recieved '404' expected '206'"
+	expected = "Invalid response code, received '404' expected '206'"
 
 	_, err = Open(url, nil)
 	if err == nil || err.Error() != expected {
