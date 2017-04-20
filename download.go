@@ -21,14 +21,9 @@ const (
 )
 
 var (
-	_        io.Reader = (*File)(nil)
-	fileMode           = os.FileMode(0770)
-
-// 	pool = &sync.Pool{
-// 		New: func() interface{} {
-// 			return new(File)
-// 		},
-// 	}
+	_           io.Reader = (*File)(nil)
+	fileMode              = os.FileMode(0770)
+	defaultTime           = time.Time{}
 )
 
 // Options contains any specific configuration values
@@ -80,9 +75,6 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 		panic("nil context")
 	}
 
-	// f := pool.Get().(*File)
-	// f.url = url
-	// f.concurencyFn = fn
 	f := &File{
 		url:     url,
 		options: options,
@@ -143,11 +135,8 @@ func (f *File) download(ctx context.Context) error {
 		return err
 	}
 
-	if cap(f.readers) > 0 {
-		f.readers = append(f.readers, fh)
-	} else {
-		f.readers = []io.ReadCloser{fh}
-	}
+	f.readers = make([]io.ReadCloser, 1)
+	f.readers[0] = fh
 
 	var read io.Reader = resp.Body
 
@@ -203,13 +192,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 
 	chunkSize--
 
-	// make readers array equal to # goroutines
-	// done this way to allow for recycling of *File
-	if int64(cap(f.readers)) < goroutines {
-		f.readers = make([]io.ReadCloser, goroutines, goroutines)
-	} else {
-		f.readers = f.readers[:goroutines]
-	}
+	f.readers = make([]io.ReadCloser, goroutines, goroutines)
 
 	ch := make(chan partialResult)
 	wg := new(sync.WaitGroup)
@@ -408,10 +391,7 @@ func (f *File) Close() error {
 		}
 	}
 
-	// f.options = nil
-	// f.readers = f.readers[0:0]
-	f.modTime = time.Time{}
-	// pool.Put(f)
+	f.modTime = defaultTime
 
 	return os.RemoveAll(f.dir)
 }
