@@ -272,36 +272,36 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	var err error
 
 	if resumeable {
-		fi, err := os.Stat(fPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				fh, err = os.Create(fPath)
-			}
-		}
-
-		// file exists...must check if partial
-		if fi.Size() < (end-start)+1 {
-
-			// lets append/download only the bytes necessary
-			start += fi.Size()
-
-			fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, fileMode)
+		var fi os.FileInfo
+		fi, err = os.Stat(fPath)
+		if os.IsNotExist(err) {
+			fh, err = os.Create(fPath)
 		} else {
 
-			fh, err = os.Open(fPath)
-			if err != nil {
+			// file exists...musts check if partial
+			if fi.Size() < (end-start)+1 {
+
+				// lets append/download only the bytes necessary
+				start += fi.Size()
+
+				fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, fileMode)
+			} else {
+
+				fh, err = os.Open(fPath)
+				if err != nil {
+					select {
+					case <-ctx.Done():
+					case ch <- partialResult{idx: idx, err: err}:
+					}
+					return
+				}
+
 				select {
 				case <-ctx.Done():
-				case ch <- partialResult{idx: idx, err: err}:
+				case ch <- partialResult{idx: idx, r: fh}:
 				}
 				return
 			}
-
-			select {
-			case <-ctx.Done():
-			case ch <- partialResult{idx: idx, r: fh}:
-			}
-			return
 		}
 	} else {
 		fh, err = os.Create(fPath)
