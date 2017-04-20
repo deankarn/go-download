@@ -1,0 +1,24 @@
+language: go
+go:
+    - 1.7.5
+    - 1.8.1
+    - tip
+
+notifications:
+    email:
+        recipients: dean.karn@gmail.com
+        on_success: change
+        on_failure: always
+
+before_install:
+  - go get github.com/mattn/goveralls
+  - go get golang.org/x/tools/cmd/cover
+
+before_script:
+  - go vet ./...
+
+script:
+ - go test -v ./...
+ - go test -race
+ - go test -v -covermode=count -coverprofile=coverage.out
+ - $HOME/gopath/bin/goveralls -coverprofile=coverage.out -service=travis-ci -repotoken $COVERALLS_TOKEN
