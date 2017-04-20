@@ -35,7 +35,9 @@ type Options struct {
 
 // ConcurrencyFn is the function used to determine the level of concurrency aka the
 // number of goroutines to use. Default concurrency level is 10
-type ConcurrencyFn func(size int64) int64
+//
+// if returned value is < 1 then the default value will be used
+type ConcurrencyFn func(size int64) int
 
 // ProxyFn is the function used to pass the download io.Reader for proxying.
 // eg. displaying a progress bar of the download.
@@ -53,7 +55,7 @@ type File struct {
 }
 
 type partialResult struct {
-	idx int64
+	idx int
 	r   io.ReadCloser
 	err error
 }
@@ -177,18 +179,20 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 		resume = true
 	}
 
-	var goroutines int64
+	var goroutines int
 
 	if f.options == nil || f.options.Concurrency == nil {
 		goroutines = defaultConcurrencyFunc(f.size)
 	} else {
 		goroutines = f.options.Concurrency(f.size)
+		if goroutines < 1 {
+			goroutines = defaultConcurrencyFunc(f.size)
+		}
 	}
 
-	chunkSize := f.size / goroutines
+	chunkSize := f.size / int64(goroutines)
 	remainer := f.size % chunkSize
 	var pos int64
-	var i int64
 
 	chunkSize--
 
@@ -196,6 +200,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 
 	ch := make(chan partialResult)
 	wg := new(sync.WaitGroup)
+	wg.Add(goroutines)
 
 	go func() {
 		<-ctx.Done() // using just in case, however unlikely, the goroutines finish prior to scheduling all of them
@@ -203,9 +208,9 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 		close(ch)
 	}()
 
-	for ; i < goroutines; i++ {
+	var i int
 
-		wg.Add(1)
+	for ; i < goroutines; i++ {
 
 		if i == goroutines-1 {
 			chunkSize += remainer // add remainer to last download
@@ -247,7 +252,7 @@ FOR:
 	}
 
 	readers := make([]io.Reader, len(f.readers))
-	for i = 0; i < int64(len(f.readers)); i++ {
+	for i = 0; i < len(f.readers); i++ {
 		readers[i] = f.readers[i]
 	}
 
@@ -257,11 +262,11 @@ FOR:
 	return nil
 }
 
-func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx, start, end int64, wg *sync.WaitGroup, ch chan<- partialResult) {
+func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, start, end int64, wg *sync.WaitGroup, ch chan<- partialResult) {
 
 	defer wg.Done()
 
-	fPath := filepath.Join(f.dir, strconv.FormatInt(idx, 10))
+	fPath := filepath.Join(f.dir, strconv.Itoa(idx))
 
 	var fh *os.File
 	var err error
@@ -406,6 +411,6 @@ func (f *File) generateHash() string {
 }
 
 // chunks up downloads into 2MB chunks, when Accept-Ranges supported
-func defaultConcurrencyFunc(length int64) int64 {
+func defaultConcurrencyFunc(length int64) int {
 	return defaultGoroutines
 }

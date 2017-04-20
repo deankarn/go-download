@@ -69,7 +69,10 @@ func CountBytes(r io.Reader) (count int64) {
 
 func TestBadOptions(t *testing.T) {
 
+	fs := http.StripPrefix("/testdata/", http.FileServer(http.Dir("./testdata")))
+
 	mux := http.NewServeMux()
+	mux.Handle("/testdata/", fs)
 	mux.HandleFunc("/testdata/bad-head-response-code", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 	})
@@ -167,6 +170,19 @@ func TestBadOptions(t *testing.T) {
 	if err == nil || err.Error() != expected {
 		t.Fatalf("Expected '%s' got '%s'", expected, err)
 	}
+
+	url = server.URL + "/testdata/data.txt"
+	options := &Options{
+		Concurrency: func(size int64) int {
+			return 0
+		},
+	}
+
+	f, err := Open(url, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
 }
 
 func TestDownloadRangeBasic(t *testing.T) {
@@ -319,9 +335,10 @@ func TestContextCancel(t *testing.T) {
 
 		m.Lock()
 		increment++
+		duration := time.Duration(int(time.Millisecond) * increment)
 		m.Unlock()
 
-		time.Sleep(time.Duration(int(time.Millisecond) * increment))
+		time.Sleep(duration)
 
 		fs.ServeHTTP(w, r)
 	})
@@ -332,7 +349,7 @@ func TestContextCancel(t *testing.T) {
 	url := server.URL + "/testdata/data.txt"
 
 	options := &Options{
-		Concurrency: func(size int64) int64 {
+		Concurrency: func(size int64) int {
 			return 30
 		},
 	}
@@ -387,9 +404,10 @@ func TestContextTimeout(t *testing.T) {
 
 		m.Lock()
 		increment++
+		duration := time.Duration(int(time.Millisecond) * increment)
 		m.Unlock()
 
-		time.Sleep(time.Duration(int(time.Millisecond) * increment))
+		time.Sleep(duration)
 
 		fs.ServeHTTP(w, r)
 	})
@@ -400,7 +418,7 @@ func TestContextTimeout(t *testing.T) {
 	url := server.URL + "/testdata/data.txt"
 
 	options := &Options{
-		Concurrency: func(size int64) int64 {
+		Concurrency: func(size int64) int {
 			return 20
 		},
 	}

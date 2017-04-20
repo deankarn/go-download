@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"math"
 
 	download "github.com/joeybloggs/go-download"
 )
@@ -9,9 +10,16 @@ import (
 func main() {
 
 	options := &download.Options{
-		Concurrency: func(size int64) int64 {
+		Concurrency: func(size int64) int {
 			// break it up into 1MB chunked downloads
-			return size / 1000000
+
+			routines := size / 1000000
+
+			if routines > int64(math.MaxInt32) {
+				return math.MaxInt32
+			}
+
+			return int(routines)
 		},
 	}
 
