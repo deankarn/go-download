@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 
@@ -14,9 +15,9 @@ func main() {
 	defer progress.Stop()
 
 	options := &download.Options{
-		Proxy: func(name string, size int64, r io.Reader) io.Reader {
+		Proxy: func(name string, download int, size int64, r io.Reader) io.Reader {
 			bar := progress.AddBar(size).
-				PrependName(name, 0, 0).
+				PrependName(fmt.Sprintf("%s-%d", name, download), 0, 0).
 				PrependCounters("%3s / %3s", mpb.UnitBytes, 18, mpb.DwidthSync|mpb.DextraSpace).
 				AppendPercentage(5, 0)
 

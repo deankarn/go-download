@@ -41,16 +41,17 @@ type ConcurrencyFn func(size int64) int
 
 // ProxyFn is the function used to pass the download io.Reader for proxying.
 // eg. displaying a progress bar of the download.
-type ProxyFn func(name string, size int64, r io.Reader) io.Reader
+type ProxyFn func(name string, download int, size int64, r io.Reader) io.Reader
 
 // File represents an open file descriptor to a downloaded file(s)
 type File struct {
-	url     string
-	dir     string
-	size    int64
-	modTime time.Time
-	options *Options
-	readers []io.ReadCloser
+	url      string
+	dir      string
+	baseName string
+	size     int64
+	modTime  time.Time
+	options  *Options
+	readers  []io.ReadCloser
 	io.Reader
 }
 
@@ -78,8 +79,9 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 	}
 
 	f := &File{
-		url:     url,
-		options: options,
+		url:      url,
+		baseName: filepath.Base(url),
+		options:  options,
 	}
 
 	resp, err := http.Head(f.url)
@@ -143,7 +145,7 @@ func (f *File) download(ctx context.Context) error {
 	var read io.Reader = resp.Body
 
 	if f.options != nil && f.options.Proxy != nil {
-		read = f.options.Proxy(filepath.Base(f.url), f.size, read)
+		read = f.options.Proxy(f.baseName, 0, f.size, read)
 	}
 
 	_, err = io.Copy(fh, read)
@@ -351,7 +353,7 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	var read io.Reader = resp.Body
 
 	if f.options != nil && f.options.Proxy != nil {
-		read = f.options.Proxy(fmt.Sprintf("%s-%d", filepath.Base(f.url), idx), (end-start)+1, read)
+		read = f.options.Proxy(f.baseName, idx, (end-start)+1, read)
 	}
 
 	_, err = io.Copy(fh, read)

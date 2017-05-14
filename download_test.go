@@ -198,7 +198,7 @@ func TestDownloadRangeBasic(t *testing.T) {
 	url := server.URL + "/testdata/data.txt"
 
 	options := &Options{
-		Proxy: func(name string, size int64, r io.Reader) io.Reader {
+		Proxy: func(name string, download int, size int64, r io.Reader) io.Reader {
 			return r // just mocking consumption
 		},
 	}
@@ -285,7 +285,7 @@ func TestDownloadBasic(t *testing.T) {
 	url := server.URL + "/testdata/data.txt"
 
 	options := &Options{
-		Proxy: func(name string, size int64, r io.Reader) io.Reader {
+		Proxy: func(name string, download int, size int64, r io.Reader) io.Reader {
 			return r // just mocking consumption
 		},
 	}
