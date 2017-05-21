@@ -102,6 +102,7 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 	}
 
 	if err != nil {
+		f.closeFileHandles()
 		return nil, err
 	}
 
@@ -266,15 +267,22 @@ FOR:
 
 func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, start, end int64, wg *sync.WaitGroup, ch chan<- partialResult) {
 
-	defer wg.Done()
+	var err error
+	var fh *os.File
+
+	defer func() {
+		if err != nil && fh != nil {
+			fh.Close()
+		}
+
+		wg.Done()
+	}()
 
 	fPath := filepath.Join(f.dir, strconv.Itoa(idx))
 
-	var fh *os.File
-	var err error
-
 	if resumeable {
 		var fi os.FileInfo
+
 		fi, err = os.Stat(fPath)
 		if os.IsNotExist(err) {
 			fh, err = os.Create(fPath)
@@ -318,8 +326,9 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	}
 
 	var client http.Client
+	var req *http.Request
 
-	req, err := http.NewRequest(http.MethodGet, f.url, nil)
+	req, err = http.NewRequest(http.MethodGet, f.url, nil)
 	if err != nil {
 		select {
 		case <-ctx.Done():
@@ -332,7 +341,9 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 
 	req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
 
-	resp, err := client.Do(req)
+	var resp *http.Response
+
+	resp, err = client.Do(req)
 	if err != nil {
 		select {
 		case <-ctx.Done():
@@ -343,9 +354,12 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusPartialContent {
+
+		err = &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}
+
 		select {
 		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}}:
+		case ch <- partialResult{idx: idx, err: err}:
 		}
 		return
 	}
@@ -358,6 +372,7 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 
 	_, err = io.Copy(fh, read)
 	if err != nil {
+
 		select {
 		case <-ctx.Done():
 		case ch <- partialResult{idx: idx, err: err}:
@@ -391,16 +406,18 @@ func (f *File) Stat() (os.FileInfo, error) {
 // Close closes the File(s), rendering it unusable for I/O. It returns an error, if any.
 func (f *File) Close() error {
 
-	// close readers from Download function
-	for i := 0; i < len(f.readers); i++ {
-		if f.readers[i] != nil { // possible if cancelled
-			f.readers[i].Close()
-		}
-	}
-
+	f.closeFileHandles()
 	f.modTime = defaultTime
 
 	return os.RemoveAll(f.dir)
+}
+
+func (f *File) closeFileHandles() {
+	for i := 0; i < len(f.readers); i++ {
+		if f.readers[i] != nil { // possible if cancelled or error occured
+			f.readers[i].Close()
+		}
+	}
 }
 
 func (f *File) generateHash() string {
