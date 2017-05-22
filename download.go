@@ -93,7 +93,20 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 		options:  options,
 	}
 
-	resp, err := http.Head(f.url)
+	req, err := http.NewRequest(http.MethodHead, f.url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if f.options != nil && f.options.Request != nil {
+		f.options.Request(req)
+	}
+
+	var client http.Client
+	if f.options != nil && f.options.Client != nil {
+		client = f.options.Client()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
