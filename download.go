@@ -30,7 +30,17 @@ var (
 type Options struct {
 	Concurrency ConcurrencyFn
 	Proxy       ProxyFn
+	Client      ClientFn
+	Request     RequestFn
 }
+
+// RequestFn allows for additional information, such as http headers, to the http request
+//
+// Do not alter the "Range" http headers or the download can become corrupt
+type RequestFn func(r *http.Request)
+
+// ClientFn allows for a custom http.Client to be used for the http request
+type ClientFn func() http.Client
 
 // ConcurrencyFn is the function used to determine the level of concurrency aka the
 // number of goroutines to use. Default concurrency level is 10
@@ -114,10 +124,17 @@ func (f *File) download(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
 	req = req.WithContext(ctx)
 
+	if f.options != nil && f.options.Request != nil {
+		f.options.Request(req)
+	}
+
 	var client http.Client
+
+	if f.options != nil && f.options.Client != nil {
+		client = f.options.Client()
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -183,11 +200,11 @@ func (f *File) downloadRangeBytes(ctx context.Context) (err error) {
 	var goroutines int
 
 	if f.options == nil || f.options.Concurrency == nil {
-		goroutines = defaultConcurrencyFunc(f.size)
+		goroutines = defaultConcurrencyFn(f.size)
 	} else {
 		goroutines = f.options.Concurrency(f.size)
 		if goroutines < 1 {
-			goroutines = defaultConcurrencyFunc(f.size)
+			goroutines = defaultConcurrencyFn(f.size)
 		}
 	}
 
@@ -298,15 +315,20 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	}
 
 	var client http.Client
-	var req *http.Request
+	if f.options != nil && f.options.Client != nil {
+		client = f.options.Client()
+	}
 
+	var req *http.Request
 	if req, err = http.NewRequest(http.MethodGet, f.url, nil); err != nil {
 		return
 	}
-
 	req = req.WithContext(ctx)
-
 	req.Header.Add("Range", fmt.Sprintf("bytes=%d-%d", start, end))
+
+	if f.options != nil && f.options.Request != nil {
+		f.options.Request(req)
+	}
 
 	var resp *http.Response
 
@@ -382,6 +404,6 @@ func (f *File) generateHash() string {
 }
 
 // chunks up downloads into 2MB chunks, when Accept-Ranges supported
-func defaultConcurrencyFunc(length int64) int {
+func defaultConcurrencyFn(length int64) int {
 	return defaultGoroutines
 }

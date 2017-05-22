@@ -288,6 +288,10 @@ func TestDownloadBasic(t *testing.T) {
 		Proxy: func(name string, download int, size int64, r io.Reader) io.Reader {
 			return r // just mocking consumption
 		},
+		Request: func(r *http.Request) {},
+		Client: func() http.Client {
+			return http.Client{}
+		},
 	}
 
 	f, err := Open(url, options)
