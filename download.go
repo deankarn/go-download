@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 	"time"
 )
 
@@ -162,13 +161,12 @@ func (f *File) download(ctx context.Context) error {
 	return nil
 }
 
-func (f *File) downloadRangeBytes(ctx context.Context) error {
+func (f *File) downloadRangeBytes(ctx context.Context) (err error) {
 
 	if f.size <= 0 {
 		return fmt.Errorf("Invalid content length '%d'", f.size)
 	}
 
-	var err error
 	var resume bool
 
 	f.dir = filepath.Join(os.TempDir(), defaultDir+f.generateHash())
@@ -176,7 +174,7 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	if _, err = os.Stat(f.dir); os.IsNotExist(err) {
 		err = os.Mkdir(f.dir, fileMode) // only owner and group have RWX access
 		if err != nil {
-			return err
+			return
 		}
 	} else {
 		resume = true
@@ -202,14 +200,6 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 	f.readers = make([]io.ReadCloser, goroutines, goroutines)
 
 	ch := make(chan partialResult)
-	wg := new(sync.WaitGroup)
-	wg.Add(goroutines)
-
-	go func() {
-		<-ctx.Done() // using just in case, however unlikely, the goroutines finish prior to scheduling all of them
-		wg.Wait()
-		close(ch)
-	}()
 
 	var i int
 
@@ -219,40 +209,45 @@ func (f *File) downloadRangeBytes(ctx context.Context) error {
 			chunkSize += remainer // add remainer to last download
 		}
 
-		go f.downloadPartial(ctx, resume, i, pos, pos+chunkSize, wg, ch)
+		go f.downloadPartial(ctx, resume, i, pos, pos+chunkSize, ch)
 
 		pos += chunkSize + 1
 	}
 
-	var j int
+	for i = 0; i < goroutines; i++ {
 
-FOR:
-	for {
 		select {
 		case <-ctx.Done():
-			err := ctx.Err()
 
-			if err == context.Canceled {
-				return &Canceled{url: f.url}
+			if ctx.Err() == context.Canceled {
+				err = &Canceled{url: f.url}
+			} else {
+				// context.DeadlineExceeded
+				err = &DeadlineExceeded{url: f.url}
 			}
 
-			// context.DeadlineExceeded
-			return &DeadlineExceeded{url: f.url}
+			//drain remaining
+			for ; i < goroutines; i++ {
+				res := <-ch
+				f.readers[res.idx] = res.r
+				break
+			}
+
 		case res := <-ch:
-
-			j++
-
-			if res.err != nil {
-				return res.err
-			}
 
 			f.readers[res.idx] = res.r
 
-			if j == len(f.readers) {
-				break FOR
+			if err != nil {
+				continue
+			}
+
+			if res.err != nil {
+				err = res.err
 			}
 		}
 	}
+
+	close(ch)
 
 	readers := make([]io.Reader, len(f.readers))
 	for i = 0; i < len(f.readers); i++ {
@@ -261,21 +256,16 @@ FOR:
 
 	f.Reader = io.MultiReader(readers...)
 	f.modTime = time.Now()
-
-	return nil
+	return
 }
 
-func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, start, end int64, wg *sync.WaitGroup, ch chan<- partialResult) {
+func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, start, end int64, ch chan<- partialResult) {
 
 	var err error
 	var fh *os.File
 
 	defer func() {
-		if err != nil && fh != nil {
-			fh.Close()
-		}
-
-		wg.Done()
+		ch <- partialResult{idx: idx, err: err, r: fh}
 	}()
 
 	fPath := filepath.Join(f.dir, strconv.Itoa(idx))
@@ -293,24 +283,10 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 
 				// lets append/download only the bytes necessary
 				start += fi.Size()
-
 				fh, err = os.OpenFile(fPath, os.O_RDWR|os.O_APPEND, fileMode)
 			} else {
-
 				fh, err = os.Open(fPath)
-				if err != nil {
-					select {
-					case <-ctx.Done():
-					case ch <- partialResult{idx: idx, err: err}:
-					}
-					return
-				}
-
-				select {
-				case <-ctx.Done():
-				case ch <- partialResult{idx: idx, r: fh}:
-				}
-				return
+				return // if error or not still leaving
 			}
 		}
 	} else {
@@ -318,22 +294,13 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 	}
 
 	if err != nil {
-		select {
-		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: err}:
-		}
 		return
 	}
 
 	var client http.Client
 	var req *http.Request
 
-	req, err = http.NewRequest(http.MethodGet, f.url, nil)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: err}:
-		}
+	if req, err = http.NewRequest(http.MethodGet, f.url, nil); err != nil {
 		return
 	}
 
@@ -343,25 +310,21 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 
 	var resp *http.Response
 
-	resp, err = client.Do(req)
-	if err != nil {
-		select {
-		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: err}:
-		}
+	if resp, err = client.Do(req); err != nil {
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusPartialContent {
-
 		err = &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusPartialContent}
-
-		select {
-		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: err}:
-		}
 		return
+	}
+
+	// check for timeout or cancellation before heaviest operation
+	select {
+	case <-ctx.Done():
+		return
+	default:
 	}
 
 	var read io.Reader = resp.Body
@@ -370,22 +333,11 @@ func (f *File) downloadPartial(ctx context.Context, resumeable bool, idx int, st
 		read = f.options.Proxy(f.baseName, idx, (end-start)+1, read)
 	}
 
-	_, err = io.Copy(fh, read)
-	if err != nil {
-
-		select {
-		case <-ctx.Done():
-		case ch <- partialResult{idx: idx, err: err}:
-		}
+	if _, err = io.Copy(fh, read); err != nil {
 		return
 	}
 
 	fh.Seek(0, 0)
-
-	select {
-	case <-ctx.Done():
-	case ch <- partialResult{idx: idx, r: fh}:
-	}
 }
 
 // Stat returns the FileInfo structure describing file(s). If there is an error, it will be of type *PathError.
