@@ -116,7 +116,7 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 		// not all services support HEAD requests
 		// so if this fails just move along to the
 		// GET portion, with a warning
-		log.Printf("notice: unexpected HEAD response code '%d', proceeding with download.", resp.StatusCode)
+		log.Printf("notice: unexpected HEAD response code '%d', proceeding with download.\n", resp.StatusCode)
 		err = f.download(ctx)
 	} else {
 		f.size = resp.ContentLength

@@ -17,6 +17,10 @@ It Features:
 ```shell
 go get -u github.com/joeybloggs/go-download
 ```
+or if your looking for the standalone client
+```shell
+go get -u github.com/joeybloggs/go-download/cmd/goget
+```
 
 ## Examples
 
