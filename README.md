@@ -1,6 +1,6 @@
 Package go-download
 ===================
-![Project status](https://img.shields.io/badge/version-2.0.0-green.svg)
+![Project status](https://img.shields.io/badge/version-2.1.0-green.svg)
 [![Build Status](https://travis-ci.org/joeybloggs/go-download.svg?branch=master)](https://travis-ci.org/joeybloggs/go-download)
 [![Coverage Status](https://coveralls.io/repos/github/joeybloggs/go-download/badge.svg?branch=master)](https://coveralls.io/github/joeybloggs/go-download?branch=master)
 [![Go Report Card](https://goreportcard.com/badge/github.com/joeybloggs/go-download)](https://goreportcard.com/report/github.com/joeybloggs/go-download)
@@ -16,6 +16,10 @@ It Features:
 ## Installation
 ```shell
 go get -u github.com/joeybloggs/go-download
+```
+or if your looking for the standalone client
+```shell
+go get -u github.com/joeybloggs/go-download/cmd/goget
 ```
 
 ## Examples

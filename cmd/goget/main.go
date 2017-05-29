@@ -5,11 +5,15 @@ import (
 	"io"
 	"log"
 
+	"os"
+
 	download "github.com/joeybloggs/go-download"
 	"github.com/vbauerster/mpb"
 )
 
 func main() {
+
+	url := os.Args[len(os.Args)-1]
 
 	progress := mpb.New().SetWidth(80)
 	defer progress.Stop()
@@ -25,11 +29,28 @@ func main() {
 		},
 	}
 
-	f, err := download.Open("https://storage.googleapis.com/golang/go1.8.1.src.tar.gz", options)
+	f, err := download.Open(url, options)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer f.Close()
 
-	// f implements io.Reader, write file somewhere or do some other sort of work with it
+	info, err := f.Stat()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	var output *os.File
+	name := info.Name()
+	output, err = os.OpenFile(name, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0666)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer output.Close()
+
+	if _, err = io.Copy(output, f); err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("Success. %s saved.", name)
 }
