@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -112,15 +113,19 @@ func OpenContext(ctx context.Context, url string, options *Options) (*File, erro
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &InvalidResponseCode{got: resp.StatusCode, expected: http.StatusOK}
-	}
-
-	f.size = resp.ContentLength
-
-	if t := resp.Header.Get("Accept-Ranges"); t == "bytes" {
-		err = f.downloadRangeBytes(ctx)
-	} else {
+		// not all services support HEAD requests
+		// so if this fails just move along to the
+		// GET portion, with a warning
+		log.Printf("notice: unexpected HEAD response code '%d', proceeding with download.", resp.StatusCode)
 		err = f.download(ctx)
+	} else {
+		f.size = resp.ContentLength
+
+		if t := resp.Header.Get("Accept-Ranges"); t == "bytes" {
+			err = f.downloadRangeBytes(ctx)
+		} else {
+			err = f.download(ctx)
+		}
 	}
 
 	if err != nil {

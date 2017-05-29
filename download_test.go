@@ -85,6 +85,18 @@ func TestBadOptions(t *testing.T) {
 
 		w.WriteHeader(http.StatusNotFound)
 	})
+	mux.HandleFunc("/testdata/bad-head-good-get", func(w http.ResponseWriter, r *http.Request) {
+
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+
+		f, _ := os.Open(data)
+		defer f.Close()
+
+		io.Copy(w, f)
+	})
 	mux.HandleFunc("/testdata/bad-content-length", func(w http.ResponseWriter, r *http.Request) {
 
 		fi, _ := os.Stat(data)
@@ -179,6 +191,13 @@ func TestBadOptions(t *testing.T) {
 	}
 
 	f, err := Open(url, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	url = server.URL + "/testdata/bad-head-good-get"
+	f, err = Open(url, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
